@@ -273,6 +273,12 @@ spec:
                   value: "az://scratch/{{ workflow.name }}/downscaled.zarr"
                 - name: adjustmentfactors-out-zarr
                   value: "az://scratch/{{ workflow.name }}/downscale-adjustmentfactors.zarr"
+                - name: firstyear
+                  value: "{{ workflow.parameters.biascorrect-firstfutureyear }}"
+                - name: lastyear
+                  value: "{{ workflow.parameters.biascorrect-lastfutureyear }}"
+                - name: regrid-method
+                  value: "bilinear"
 
 
     - name: regrid
@@ -692,6 +698,10 @@ spec:
               f"{local_stash}*.nc",
               concat_dim="time"
           )
+
+          # Auto rechunk otherwise zarr codec chokes on buffers > 2147483647B.
+          d = d.chunk("auto")
+
           d.to_zarr(
               os.environ.get("OUT"),
               mode="w",
@@ -718,24 +728,20 @@ spec:
 
 
     - name: downscale-bcsd
+      parallelism: 10  # Limit the number of parallel jobs to not spam k8sapi.
       inputs:
         parameters:
           - name: in-zarr
-            value: "az://scratch/dc6-dev-75bpr/fine-climatology-regrid.zarr"
           - name: domain-file
-            value: "{{ workflow.parameters.domainfile0p25x0p25 }}"
           - name: yclimocoarse-zarr
-            value: "az://scratch/dc6-dev-75bpr/coarse-climatology-regrid.zarr"
           - name: yclimofine-zarr
-            value: "az://scratch/dc6-dev-75bpr/fine-climatology-regrid.zarr"
           - name: train-variable
-            value: "temperature"
           - name: out-variable
-            value: "tasmax"
           - name: adjustmentfactors-out-zarr
-            value: "az://scatch/{{ workflow.name }}/af.zarr"
           - name: out-zarr
-            value: "az://scatch/{{ workflow.name }}/downscaled.zarr"
+          - name: firstyear
+          - name: lastyear
+          - name: regrid-method
       outputs:
         parameters:
           - name: out-zarr
@@ -743,11 +749,11 @@ spec:
               parameter: "{{ inputs.parameters.out-zarr }}"
           - name: adjustmentfactors-out-zarr
             valueFrom:
-              parameter:  "{{ inputs.parameters.adjustmentfactors-out-zarr }}"
+              parameter: "{{ inputs.parameters.adjustmentfactors-out-zarr }}"
       dag:
         tasks:
           - name: rename-main-ds
-            template: downscaler-rename
+            template: rename-zarr-variable
             arguments:
               parameters:
                 - name: in-zarr
@@ -759,7 +765,7 @@ spec:
                 - name: rename-to
                   value: "{{ inputs.parameters.train-variable }}"
           - name: rename-coarseclimo-ds
-            template: downscaler-rename
+            template: rename-zarr-variable
             arguments:
               parameters:
                 - name: in-zarr
@@ -771,7 +777,7 @@ spec:
                 - name: rename-to
                   value: "{{ inputs.parameters.train-variable }}"
           - name: rename-fineclimo-ds
-            template: downscaler-rename
+            template: rename-zarr-variable
             arguments:
               parameters:
                 - name: in-zarr
@@ -796,25 +802,37 @@ spec:
                 - name: out-zarr
                   value: "az://scratch/{{ workflow.name }}/adjustmentfactors-original.zarr"
           - name: regrid-adjustmentfactors
-            template: regrid
+            template: regrid-select-time
             dependencies: [ fit-adjustmentfactors ]
             arguments:
               parameters:
                 - name: in-zarr
                   value: "{{ tasks.fit-adjustmentfactors.outputs.parameters.out-zarr }}"
-                - name: out-zarr
-                  value: "{{ inputs.parameters.adjustmentfactors-out-zarr }}"
+                - name: select-time
+                  value: "{{ item }}"
                 - name: regrid-method
-                  value: "bilinear"
+                  value: "{{ inputs.parameters.regrid-method }}"
                 - name: domain-file
                   value: "{{ inputs.parameters.domain-file }}"
+            withSequence:
+              start: "{{ inputs.parameters.firstyear }}"
+              end: "{{ inputs.parameters.lastyear }}"
+          - name: netcdfs2zarr
+            template: netcdfs2zarr
+            dependencies: [ regrid-adjustmentfactors ]
+            arguments:
+              parameters:
+                - name: in-dir
+                  value: "scratch/{{ workflow.name }}/sd-regrid-years/"
+                - name: out-zarr
+                  value: "{{ inputs.parameters.adjustmentfactors-out-zarr }}"
           - name: apply-adjustmentfactors
             template: apply-adjustmentfactors
-            dependencies: [ regrid-adjustmentfactors, rename-fineclimo-ds ]
+            dependencies: [ netcdfs2zarr, rename-fineclimo-ds ]
             arguments:
               parameters:
                 - name: in-zarr
-                  value: "{{ tasks.regrid-adjustmentfactors.outputs.parameters.out-zarr }}"
+                  value: "{{ tasks.netcdfs2zarr.outputs.parameters.out-zarr }}"
                 - name: out-variable
                   value: "{{ inputs.parameters.out-variable }}"
                 - name: train-variable
@@ -823,6 +841,82 @@ spec:
                   value: "{{ tasks.rename-fineclimo-ds.outputs.parameters.out-zarr }}"
                 - name: out-zarr
                   value: "{{ inputs.parameters.out-zarr }}"
+
+    # Subset to a select time and then regrid the subset, output netcdf
+    - name: regrid-select-time
+      inputs:
+        parameters:
+          - name: in-zarr
+          - name: select-time
+          - name: regrid-method
+          - name: domain-file
+      outputs:
+        artifacts:
+          - name: regridded
+            path: "/mnt/out/{{ inputs.parameters.select-time }}.nc"
+            archive:
+              none: { }
+            s3:
+              key: "{{ workflow.name }}/sd-regrid-years/{{ inputs.parameters.select-time }}.nc"
+      script:
+        image: downscalecmip6.azurecr.io/dodola:dev
+        imagePullPolicy: Always
+        env:
+          - name: IN_ZARR
+            value: "{{ inputs.parameters.in-zarr }}"
+          - name: SELTIME
+            value: "{{ inputs.parameters.select-time }}"
+          - name: REGRID_METHOD
+            value: "{{ inputs.parameters.regrid-method }}"
+          - name: DOMAIN_FILE
+            value: "{{ inputs.parameters.domain-file }}"
+          - name: OUTPATH
+            value: "/mnt/out/{{ inputs.parameters.select-time }}.nc"
+          - name: AZURE_STORAGE_ACCOUNT_NAME
+            valueFrom:
+              secretKeyRef:
+                name: workerstoragecreds-secret
+                key: azurestorageaccount
+          - name: AZURE_STORAGE_ACCOUNT_KEY
+            valueFrom:
+              secretKeyRef:
+                name: workerstoragecreds-secret
+                key: azurestoragekey
+        command: [ python ]
+        source: |
+          import os
+          import dodola.repository
+          from dodola.core import xesmf_regrid
+          import xarray as xr
+
+          in_zarr = os.environ["IN_ZARR"]
+          sel_time = os.environ["SELTIME"]
+          regrid_method = os.environ["REGRID_METHOD"]
+          domain_file = os.environ["DOMAIN_FILE"]
+          outpath = os.environ["OUTPATH"]
+
+          ds_in = dodola.repository.read(in_zarr).sel(time=sel_time)
+          domain_fl = dodola.repository.read(domain_file)
+          ds_out = xesmf_regrid(ds_in, domain_fl, regrid_method)
+          ds_out.to_netcdf(outpath)
+        resources:
+          requests:
+            memory: 12Gi
+            cpu: "2000m"
+          limits:
+            memory: 12Gi
+            cpu: "2000m"
+        # emptyDir volume as k8sapi can't output to base image layer:
+        volumeMounts:
+          - name: out
+            mountPath: /mnt/out
+      volumes:
+        - name: out
+          emptyDir: { }
+      activeDeadlineSeconds: 86400
+      retryStrategy:
+        limit: 2
+        retryPolicy: "Always"
 
 
     - name: fit-adjustmentfactors
@@ -897,61 +991,6 @@ spec:
             cpu: "3000m"
       activeDeadlineSeconds: 4200  # 12 hours
 
-
-    - name: rechunk-adjustmentfactors
-      inputs:
-        parameters:
-          - name: in-zarr
-          - name: out-zarr
-          - name: time-chunk
-            value: 365
-          - name: lat-chunk
-            value: 10
-          - name: lon-chunk
-            value: 10
-          - name: dayofyear-chunk
-            value: 365
-      outputs:
-        parameters:
-          - name: out-zarr
-            value: "{{ inputs.parameters.out-zarr }}"
-      container:
-        image: downscalecmip6.azurecr.io/dodola:0.2.0
-        env:
-          - name: AZURE_STORAGE_ACCOUNT_NAME
-            valueFrom:
-              secretKeyRef:
-                name: workerstoragecreds-secret
-                key: azurestorageaccount
-          - name: AZURE_STORAGE_ACCOUNT_KEY
-            valueFrom:
-              secretKeyRef:
-                name: workerstoragecreds-secret
-                key: azurestoragekey
-        command: [ dodola ]
-        args:
-          - "rechunk"
-          - "{{ inputs.parameters.in-zarr }}"
-          - "--out"
-          - "{{ inputs.parameters.out-zarr }}"
-          - "--chunk"
-          - "time={{ inputs.parameters.time-chunk }}"
-          - "--chunk"
-          - "lat={{ inputs.parameters.lat-chunk }}"
-          - "--chunk"
-          - "lon={{ inputs.parameters.lon-chunk }}"
-          - "--chunk"
-          - "dayofyear={{ inputs.parameters.dayofyear-chunk }}"
-        resources:
-          requests:
-            memory: 32Gi
-            cpu: "1000m"
-          limits:
-            memory: 32Gi
-            cpu: "2000m"
-      activeDeadlineSeconds: 10800
-
-
     - name: apply-adjustmentfactors
       inputs:
         parameters:
@@ -1020,7 +1059,7 @@ spec:
       activeDeadlineSeconds: 43200  # 12 hours
 
 
-    - name: downscaler-rename
+    - name: rename-zarr-variable
       inputs:
         parameters:
           - name: in-zarr
