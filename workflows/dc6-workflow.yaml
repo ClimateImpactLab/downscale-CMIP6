@@ -29,8 +29,6 @@ spec:
         value: "az://support/domain.1x1.zarr"
       - name: domainfile0p25x0p25
         value: "az://support/domain.0p25x0p25.zarr"
-      - name: climatology-zarr
-        value: "az://clean-dev/tasmax_1995_2015_climo_cleaned.zarr"
   serviceAccountName: workflows-default
   # So workers go on larger, spot, worker node pool.
   nodeSelector:
@@ -50,27 +48,82 @@ spec:
     - name: main
       dag:
         tasks:
-          - name: reference-regrid
+          - name: reference-1x1regrid
             template: regrid
             arguments:
               parameters:
                 - name: in-zarr
                   value: "{{ workflow.parameters.reference-zarr }}"
                 - name: out-zarr
-                  value: "az://scratch/{{ workflow.name }}/reference-regrid.zarr"
+                  value: "az://scratch/{{ workflow.name }}/reference-1x1regrid.zarr"
                 - name: regrid-method
                   value: "bilinear"
                 - name: domain-file
                   value: "{{ workflow.parameters.domainfile1x1 }}"
-          - name: reference-rechunk
-            dependencies: [ reference-regrid ]
+          - name: reference-1x1rechunk
+            dependencies: [ reference-1x1regrid ]
             template: rechunk
             arguments:
               parameters:
                 - name: in-zarr
-                  value: "{{ tasks.reference-regrid.outputs.parameters.out-zarr }}"
+                  value: "{{ tasks.reference-1x1regrid.outputs.parameters.out-zarr }}"
                 - name: out-zarr
-                  value: "az://scratch/{{ workflow.name }}/reference-rechunk.zarr"
+                  value: "az://scratch/{{ workflow.name }}/reference-1x1rechunk.zarr"
+                - name: time-chunk
+                  value: "-1"
+                - name: lat-chunk
+                  value: 10
+                - name: lon-chunk
+                  value: 10
+          - name: reference-0p25x0p25regrid
+            template: regrid
+            arguments:
+              parameters:
+                - name: in-zarr
+                  value: "{{ workflow.parameters.reference-zarr }}"
+                - name: out-zarr
+                  value: "az://scratch/{{ workflow.name }}/reference-0p25x0p25regrid.zarr"
+                - name: regrid-method
+                  value: "bilinear"
+                - name: domain-file
+                  value: "{{ workflow.parameters.domainfile0p25x0p25 }}"
+          - name: reference-0p25x0p25rechunk
+            dependencies: [ reference-0p25x0p25regrid ]
+            template: rechunk
+            arguments:
+              parameters:
+                - name: in-zarr
+                  value: "{{ tasks.reference-0p25x0p25regrid.outputs.parameters.out-zarr }}"
+                - name: out-zarr
+                  value: "az://scratch/{{ workflow.name }}/reference-0p25x0p25rechunk.zarr"
+                - name: time-chunk
+                  value: "-1"
+                - name: lat-chunk
+                  value: 10
+                - name: lon-chunk
+                  value: 10
+          - name: reference-1x1regrid-nearestneighbor
+            dependencies: [ reference-0p25x0p25regrid ]
+            template: regrid
+            arguments:
+              parameters:
+                - name: in-zarr
+                  value: "{{ tasks.reference-0p25x0p25regrid.outputs.parameters.out-zarr }}"
+                - name: out-zarr
+                  value: "az://scratch/{{ workflow.name }}/reference-1x1regrid-nearestneighbor.zarr"
+                - name: regrid-method
+                  value: "nearest_s2d"
+                - name: domain-file
+                  value: "{{ workflow.parameters.domainfile1x1 }}"
+          - name: reference-1x1rechunk-nearestneighbor
+            dependencies: [ reference-1x1regrid-nearestneighbor ]
+            template: rechunk
+            arguments:
+              parameters:
+                - name: in-zarr
+                  value: "{{ tasks.reference-1x1regrid-nearestneighbor.outputs.parameters.out-zarr }}"
+                - name: out-zarr
+                  value: "az://scratch/{{ workflow.name }}/reference-1x1rechunk-nearestneighbor.zarr"
                 - name: time-chunk
                   value: "-1"
                 - name: lat-chunk
@@ -159,14 +212,14 @@ spec:
                 - name: lon-chunk
                   value: 10
           - name: biascorrect
-            dependencies: [ gcm-training-rechunk, gcm-future-rechunk, reference-rechunk ]
+            dependencies: [ gcm-training-rechunk, gcm-future-rechunk, reference-1x1rechunk ]
             template: biascorrect-qdm
             arguments:
               parameters:
                 - name: variable
                   value: "{{ workflow.parameters.target-variable }}"
                 - name: ref-zarr
-                  value: "{{ tasks.reference-rechunk.outputs.parameters.out-zarr }}"
+                  value: "{{ tasks.reference-1x1rechunk.outputs.parameters.out-zarr }}"
                 - name: hist-zarr
                   value: "{{ tasks.gcm-training-rechunk.outputs.parameters.out-zarr }}"
                 - name: future-zarr
@@ -179,100 +232,78 @@ spec:
                   value: "{{ workflow.parameters.biascorrect-firstfutureyear }}"
                 - name: lastyear
                   value: "{{ workflow.parameters.biascorrect-lastfutureyear }}"
-          - name: rechunk-biascorrected
-            template: rechunk
+          - name: upsample-biascorrected
+            template: upsample
             dependencies: [ biascorrect ]
             arguments:
               parameters:
                 - name: in-zarr
                   value: "{{ tasks.biascorrect.outputs.parameters.out-zarr }}"
                 - name: out-zarr
+                  value: "az://scratch/{{ workflow.name }}/biascorrected-0p25x0p25-upsampled.zarr"
+                - name: lat-scale
+                  value: 4
+                - name: lon-scale
+                  value: 4
+          - name: rechunk-biascorrected
+            template: rechunk
+            dependencies: [ upsample-biascorrected ]
+            arguments:
+              parameters:
+                - name: in-zarr
+                  value: "{{ tasks.upsample-biascorrected.outputs.parameters.out-zarr }}"
+                - name: out-zarr
                   value: "az://scratch/{{ workflow.name }}/biascorrected-rechunked.zarr"
                 - name: time-chunk
-                  value: 100
-                - name: lat-chunk
-                  value: -1
-                - name: lon-chunk
-                  value: -1
-          - name: coarse-climatology-rechunk
-            template: rechunk
-            arguments:
-              parameters:
-                - name: in-zarr
-                  value: "{{ workflow.parameters.climatology-zarr }}"
-                - name: out-zarr
-                  value: "az://scratch/{{ workflow.name }}/coarse-climatology-rechunk.zarr"
-                - name: time-chunk
                   value: -1
                 - name: lat-chunk
-                  value: -1
+                  value: 10
                 - name: lon-chunk
-                  value: -1
-                - name: time-dim-name
-                  value: dayofyear
-          - name: coarse-climatology-regrid
-            template: regrid
-            dependencies: [ coarse-climatology-rechunk ]
+                  value: 10
+          - name: downscale-train-analog
+            dependencies: [ reference-0p25x0p25rechunk, reference-1x1rechunk-nearestneighbor ]
+            template: downscale-train-analog
             arguments:
               parameters:
-                - name: in-zarr
-                  value: "{{ tasks.coarse-climatology-rechunk.outputs.parameters.out-zarr }}"
-                - name: out-zarr
-                  value: "az://scratch/{{ workflow.name }}/coarse-climatology-regrid.zarr"
-                - name: regrid-method
-                  value: "bilinear"
-                - name: domain-file
-                  value: "{{ workflow.parameters.domainfile1x1 }}"
-          - name: fine-climatology-rechunk
-            template: rechunk
-            arguments:
-              parameters:
-                - name: in-zarr
-                  value: "{{ workflow.parameters.climatology-zarr }}"
-                - name: out-zarr
-                  value: "az://scratch/{{ workflow.name }}/fine-climatology-rechunk.zarr"
-                - name: time-chunk
-                  value: 100
-                - name: lat-chunk
-                  value: -1
-                - name: lon-chunk
-                  value: -1
-                - name: time-dim-name
-                  value: dayofyear
-          - name: fine-climatology-regrid
-            template: regrid
-            dependencies: [ fine-climatology-rechunk ]
-            arguments:
-              parameters:
-                - name: in-zarr
-                  value: "{{ tasks.fine-climatology-rechunk.outputs.parameters.out-zarr }}"
-                - name: out-zarr
-                  value: "az://scratch/{{ workflow.name }}/fine-climatology-regrid.zarr"
-                - name: regrid-method
-                  value: "bilinear"
-                - name: domain-file
-                  value: "{{ workflow.parameters.domainfile0p25x0p25 }}"
-          - name: downscale
-            template: downscale-bcsd
-            dependencies: [ rechunk-biascorrected, fine-climatology-regrid, coarse-climatology-regrid ]
-            arguments:
-              parameters:
-                - name: in-zarr
-                  value: "{{ tasks.rechunk-biascorrected.outputs.parameters.out-zarr }}"
-                - name: out-variable
+                - name: variable
                   value: "{{ workflow.parameters.target-variable }}"
-                - name: train-variable
-                  value: "temperature"
-                - name: domain-file
-                  value: "{{ workflow.parameters.domainfile0p25x0p25 }}"
-                - name: yclimocoarse-zarr
-                  value: "{{ tasks.coarse-climatology-regrid.outputs.parameters.out-zarr }}"
-                - name: yclimofine-zarr
-                  value: "{{ tasks.fine-climatology-regrid.outputs.parameters.out-zarr }}"
+                - name: ref1x1-zarr
+                  value: "{{ tasks.reference-1x1rechunk-nearestneighbor.outputs.parameters.out-zarr }}"
+                - name: ref0p25x0p25-zarr
+                  value: "{{ tasks.reference-0p25x0p25rechunk.outputs.parameters.out-zarr }}"
                 - name: out-zarr
-                  value: "az://scratch/{{ workflow.name }}/downscaled.zarr"
-                - name: adjustmentfactors-out-zarr
-                  value: "az://scratch/{{ workflow.name }}/downscale-adjustmentfactors.zarr"
+                  value: "az://scratch/{{ workflow.name }}/analog-model.zarr"
+                - name: kind
+                  value: additive
+                - name: firstyear
+                  value: "{{ workflow.parameters.biascorrect-firstfutureyear }}"
+                - name: lastyear
+                  value: "{{ workflow.parameters.biascorrect-lastfutureyear }}"
+          - name: downscale-analog-adjust-year
+            dependencies: [ downscale-train-analog, rechunk-biascorrected ]
+            template: downscale-analog-adjust-year
+            arguments:
+              parameters:
+                - name: to-downscale-zarr
+                  value: "{{ tasks.rechunk-biascorrected.outputs.parameters.out-zarr }}"
+                - name: variable
+                  value: "{{ workflow.parameters.target-variable }}"
+                - name: year
+                  value: "{{item}}"
+                - name: analog-model-zarr
+                  value: "{{ tasks.downscale-train-analog.outputs.parameters.out-zarr }}"
+            withSequence:
+              start: "{{ workflow.parameters.biascorrect-firstfutureyear }}"
+              end: "{{ workflow.parameters.biascorrect-lastfutureyear }}"
+          - name: downscale-netcdfs2zarr
+            dependencies: [ downscale-analog-adjust-year ]
+            template: netcdfs2zarr
+            arguments:
+              parameters:
+                - name: in-dir
+                  value: "scratch/{{workflow.name}}/analog-years/"
+                - name: out-zarr
+                  value: "{{ workflow.parameters.out-zarr }}"
 
 
     - name: regrid
@@ -717,136 +748,25 @@ spec:
         retryPolicy: "Always"
 
 
-    - name: downscale-bcsd
+    - name: upsample
       inputs:
         parameters:
           - name: in-zarr
-            value: "az://scratch/dc6-dev-75bpr/fine-climatology-regrid.zarr"
-          - name: domain-file
-            value: "{{ workflow.parameters.domainfile0p25x0p25 }}"
-          - name: yclimocoarse-zarr
-            value: "az://scratch/dc6-dev-75bpr/coarse-climatology-regrid.zarr"
-          - name: yclimofine-zarr
-            value: "az://scratch/dc6-dev-75bpr/fine-climatology-regrid.zarr"
-          - name: train-variable
-            value: "temperature"
-          - name: out-variable
-            value: "tasmax"
-          - name: adjustmentfactors-out-zarr
-            value: "az://scatch/{{ workflow.name }}/af.zarr"
           - name: out-zarr
-            value: "az://scatch/{{ workflow.name }}/downscaled.zarr"
-      outputs:
-        parameters:
-          - name: out-zarr
-            valueFrom:
-              parameter: "{{ inputs.parameters.out-zarr }}"
-          - name: adjustmentfactors-out-zarr
-            valueFrom:
-              parameter:  "{{ inputs.parameters.adjustmentfactors-out-zarr }}"
-      dag:
-        tasks:
-          - name: rename-main-ds
-            template: downscaler-rename
-            arguments:
-              parameters:
-                - name: in-zarr
-                  value: "{{ inputs.parameters.in-zarr }}"
-                - name: out-zarr
-                  value: "az://scratch/{{workflow.name}}/downscaling/renamed.zarr"
-                - name: rename-from
-                  value: "{{ inputs.parameters.out-variable }}"
-                - name: rename-to
-                  value: "{{ inputs.parameters.train-variable }}"
-          - name: rename-coarseclimo-ds
-            template: downscaler-rename
-            arguments:
-              parameters:
-                - name: in-zarr
-                  value: "{{ inputs.parameters.yclimocoarse-zarr }}"
-                - name: out-zarr
-                  value: "az://scratch/{{workflow.name}}/downscaling/coarseclimo-renamed.zarr"
-                - name: rename-from
-                  value: "{{ inputs.parameters.out-variable }}"
-                - name: rename-to
-                  value: "{{ inputs.parameters.train-variable }}"
-          - name: rename-fineclimo-ds
-            template: downscaler-rename
-            arguments:
-              parameters:
-                - name: in-zarr
-                  value: "{{ inputs.parameters.yclimofine-zarr }}"
-                - name: out-zarr
-                  value: "az://scratch/{{workflow.name}}/downscaling/fineclimo-renamed.zarr"
-                - name: rename-from
-                  value: "{{ inputs.parameters.out-variable }}"
-                - name: rename-to
-                  value: "{{ inputs.parameters.train-variable }}"
-          - name: fit-adjustmentfactors
-            template: fit-adjustmentfactors
-            dependencies: [ rename-main-ds, rename-coarseclimo-ds ]
-            arguments:
-              parameters:
-                - name: in-zarr
-                  value: "{{ tasks.rename-main-ds.outputs.parameters.out-zarr }}"
-                - name: train-variable
-                  value: "{{ inputs.parameters.train-variable }}"
-                - name: yclimocoarse-zarr
-                  value: "{{ tasks.rename-coarseclimo-ds.outputs.parameters.out-zarr }}"
-                - name: out-zarr
-                  value: "az://scratch/{{ workflow.name }}/adjustmentfactors-original.zarr"
-          - name: regrid-adjustmentfactors
-            template: regrid
-            dependencies: [ fit-adjustmentfactors ]
-            arguments:
-              parameters:
-                - name: in-zarr
-                  value: "{{ tasks.fit-adjustmentfactors.outputs.parameters.out-zarr }}"
-                - name: out-zarr
-                  value: "{{ inputs.parameters.adjustmentfactors-out-zarr }}"
-                - name: regrid-method
-                  value: "bilinear"
-                - name: domain-file
-                  value: "{{ inputs.parameters.domain-file }}"
-          - name: apply-adjustmentfactors
-            template: apply-adjustmentfactors
-            dependencies: [ regrid-adjustmentfactors, rename-fineclimo-ds ]
-            arguments:
-              parameters:
-                - name: in-zarr
-                  value: "{{ tasks.regrid-adjustmentfactors.outputs.parameters.out-zarr }}"
-                - name: out-variable
-                  value: "{{ inputs.parameters.out-variable }}"
-                - name: train-variable
-                  value: "{{ inputs.parameters.train-variable }}"
-                - name: yclimofine-zarr
-                  value: "{{ tasks.rename-fineclimo-ds.outputs.parameters.out-zarr }}"
-                - name: out-zarr
-                  value: "{{ inputs.parameters.out-zarr }}"
-
-
-    - name: fit-adjustmentfactors
-      inputs:
-        parameters:
-          - name: in-zarr
-          - name: yclimocoarse-zarr
-          - name: train-variable
-          - name: out-zarr
+          - name: lat-scale
+            value: 4
+          - name: lon-scale
+            value: 4
       outputs:
         parameters:
           - name: out-zarr
             value: "{{ inputs.parameters.out-zarr }}"
       script:
-        image: downscalecmip6.azurecr.io/dodola:0.3.0
+        image: downscalecmip6.azurecr.io/dodola:dev
+        imagePullPolicy: Always
         env:
           - name: IN_ZARR
             value: "{{ inputs.parameters.in-zarr }}"
-          - name: CLIMO_ZARR
-            value: "{{ inputs.parameters.yclimocoarse-zarr }}"
-          - name: TRAIN_VARIABLE
-            value: "{{ inputs.parameters.train-variable }}"
-          - name: OUT_ZARR
-            value: "{{ inputs.parameters.out-zarr }}"
           - name: AZURE_STORAGE_ACCOUNT_NAME
             valueFrom:
               secretKeyRef:
@@ -861,122 +781,38 @@ spec:
         source: |
           import os
           import xarray as xr
-          from skdownscale.spatial_models import SpatialDisaggregator
 
-          in_store_path = os.environ.get("IN_ZARR")
-          climo_path = os.environ.get("CLIMO_ZARR")
-          train_variable = os.environ.get("TRAIN_VARIABLE")
-          out_path = os.environ.get("OUT_ZARR")
-
-          ds = xr.open_zarr(in_store_path)
-          print(f"read {in_store_path}")
-          obs_climo_coarse = xr.open_zarr(climo_path)
-          print(f"read {climo_path}")
-
-          sd = SpatialDisaggregator(var=train_variable)
-          af = sd.fit(ds, obs_climo_coarse, var_name=train_variable)
-          print("spatial disaggregation fit")
-
-          af.to_zarr(
-              out_path,
-              mode="w",
-              encoding={  # Change chunking to make it easier to regrid to quarter degree.
-                  "time": {"chunks": (100,)},
-                  "lat": {"chunks": (-1,)},
-                  "lon": {"chunks": (-1,)},
-                  "dayofyear": {"chunks": (100,)}
-              }
-          )
-          print(f"written to {out_path}")
+          print("This is the upsample step")
         resources:
           requests:
-            memory: 24Gi
+            memory: 500Mi
             cpu: "1000m"
           limits:
-            memory: 24Gi
-            cpu: "3000m"
-      activeDeadlineSeconds: 4200  # 12 hours
-
-
-    - name: rechunk-adjustmentfactors
-      inputs:
-        parameters:
-          - name: in-zarr
-          - name: out-zarr
-          - name: time-chunk
-            value: 365
-          - name: lat-chunk
-            value: 10
-          - name: lon-chunk
-            value: 10
-          - name: dayofyear-chunk
-            value: 365
-      outputs:
-        parameters:
-          - name: out-zarr
-            value: "{{ inputs.parameters.out-zarr }}"
-      container:
-        image: downscalecmip6.azurecr.io/dodola:0.2.0
-        env:
-          - name: AZURE_STORAGE_ACCOUNT_NAME
-            valueFrom:
-              secretKeyRef:
-                name: workerstoragecreds-secret
-                key: azurestorageaccount
-          - name: AZURE_STORAGE_ACCOUNT_KEY
-            valueFrom:
-              secretKeyRef:
-                name: workerstoragecreds-secret
-                key: azurestoragekey
-        command: [ dodola ]
-        args:
-          - "rechunk"
-          - "{{ inputs.parameters.in-zarr }}"
-          - "--out"
-          - "{{ inputs.parameters.out-zarr }}"
-          - "--chunk"
-          - "time={{ inputs.parameters.time-chunk }}"
-          - "--chunk"
-          - "lat={{ inputs.parameters.lat-chunk }}"
-          - "--chunk"
-          - "lon={{ inputs.parameters.lon-chunk }}"
-          - "--chunk"
-          - "dayofyear={{ inputs.parameters.dayofyear-chunk }}"
-        resources:
-          requests:
-            memory: 32Gi
+            memory: 1Gi
             cpu: "1000m"
-          limits:
-            memory: 32Gi
-            cpu: "2000m"
-      activeDeadlineSeconds: 10800
+      activeDeadlineSeconds: 900
 
 
-    - name: apply-adjustmentfactors
+    - name: downscale-train-analog
       inputs:
         parameters:
-          - name: in-zarr
-          - name: yclimofine-zarr
-          - name: train-variable
-          - name: out-variable
+          - name: variable
+          - name: ref1x1-zarr
+          - name: ref0p25x0p25-zarr
           - name: out-zarr
+          - name: kind
+          - name: firstyear
+          - name: lastyear
       outputs:
         parameters:
           - name: out-zarr
             value: "{{ inputs.parameters.out-zarr }}"
       script:
-        image: downscalecmip6.azurecr.io/dodola:0.3.0
+        image: downscalecmip6.azurecr.io/dodola:dev
+        imagePullPolicy: Always
         env:
           - name: IN_ZARR
             value: "{{ inputs.parameters.in-zarr }}"
-          - name: CLIMO_ZARR
-            value: "{{ inputs.parameters.yclimofine-zarr }}"
-          - name: TRAIN_VARIABLE
-            value: "{{ inputs.parameters.train-variable }}"
-          - name: OUT_VARIABLE
-            value: "{{ inputs.parameters.out-variable }}"
-          - name: OUT_ZARR
-            value: "{{ inputs.parameters.out-zarr }}"
           - name: AZURE_STORAGE_ACCOUNT_NAME
             valueFrom:
               secretKeyRef:
@@ -991,59 +827,35 @@ spec:
         source: |
           import os
           import xarray as xr
-          from skdownscale.spatial_models import SpatialDisaggregator
 
-          in_store_path = os.environ.get("IN_ZARR")
-          climo_path = os.environ.get("CLIMO_ZARR")
-          train_variable = os.environ.get("TRAIN_VARIABLE")
-          out_variable = os.environ.get("OUT_VARIABLE")
-          out_path = os.environ.get("OUT_ZARR")
-
-          af = xr.open_zarr(in_store_path)
-          print(f"read {in_store_path}")
-          obs_climo_fine = xr.open_zarr(climo_path)
-          print(f"read {climo_path}")
-
-          sd = SpatialDisaggregator(var=train_variable)
-          out = model.predict(af, obs_climo_fine[train_variable], var_name=train_variable)
-          print("spatial disaggregation adjustment factors applied")
-
-          out.to_dataset(name=out_variable).to_zarr(out_path, mode="w")
-          print(f"written to {out_path}")
+          print("This is the downscale-train-analog step")
         resources:
           requests:
-            memory: 42Gi
+            memory: 500Mi
             cpu: "1000m"
           limits:
-            memory: 42Gi
-            cpu: "2000m"
-      activeDeadlineSeconds: 43200  # 12 hours
+            memory: 1Gi
+            cpu: "1000m"
+      activeDeadlineSeconds: 900
 
 
-    - name: downscaler-rename
+    - name: downscale-analog-adjust-year
       inputs:
         parameters:
-          - name: in-zarr
-          - name: rename-from
-          - name: rename-to
-          - name: out-zarr
+          - name: to-downscale-zarr
+          - name: variable
+          - name: year
+          - name: analog-model-zarr
       outputs:
         parameters:
           - name: out-zarr
             value: "{{ inputs.parameters.out-zarr }}"
       script:
-        image: downscalecmip6.azurecr.io/dodola:0.2.0
+        image: downscalecmip6.azurecr.io/dodola:dev
+        imagePullPolicy: Always
         env:
           - name: IN_ZARR
-            value: "{{  inputs.parameters.in-zarr }}"
-          - name: RENAME_FROM
-            value: "{{  inputs.parameters.rename-from }}"
-          - name: RENAME_TO
-            value: "{{  inputs.parameters.rename-to }}"
-          - name: OUT_ZARR
-            value: "{{  inputs.parameters.out-zarr }}"
-          - name: PYTHONUNBUFFERED
-            value: "1"
+            value: "{{ inputs.parameters.in-zarr }}"
           - name: AZURE_STORAGE_ACCOUNT_NAME
             valueFrom:
               secretKeyRef:
@@ -1054,37 +866,20 @@ spec:
               secretKeyRef:
                 name: workerstoragecreds-secret
                 key: azurestoragekey
-          - name: PYTHONUNBUFFERED
-            value: "1"
-        command: [python]
+        command: [ python ]
         source: |
           import os
           import xarray as xr
 
-
-          in_store_path = os.environ.get("IN_ZARR")
-          out_store_path = os.environ.get("OUT_ZARR")
-          rename_from = os.environ.get("RENAME_FROM")
-          rename_to = os.environ.get("RENAME_TO")
-
-          ds = xr.open_zarr(in_store_path)
-          print(f"opening {in_store_path}")
-
-          ds = ds.rename({rename_from: rename_to})
-
-          ds.to_zarr(out_store_path, mode="w")
-          print(f"written to {out_store_path}")
+          print("This is the downscale-analog-adjust-year step")
         resources:
           requests:
-            memory: 24Gi
-            cpu: "200m"
+            memory: 500Mi
+            cpu: "1000m"
           limits:
-            memory: 24Gi
-            cpu: "2000m"
-      activeDeadlineSeconds: 1800
-      retryStrategy:
-        limit: 3
-        retryPolicy: "Always"
+            memory: 1Gi
+            cpu: "1000m"
+      activeDeadlineSeconds: 900
 
 
     # Prints data on stored zarr file to log.
