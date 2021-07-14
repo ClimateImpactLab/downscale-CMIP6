@@ -350,7 +350,7 @@ spec:
           - name: out-zarr
             value: "{{ inputs.parameters.out-zarr }}"
       container:
-        image: downscalecmip6.azurecr.io/dodola:0.3.0
+        image: downscalecmip6.azurecr.io/dodola:0.4.1
         env:
           - name: AZURE_STORAGE_ACCOUNT_NAME
             valueFrom:
@@ -366,6 +366,7 @@ spec:
         args:
           - "regrid"
           - "{{ inputs.parameters.in-zarr }}"
+          - "--astype=float32"
           - "--out"
           - "{{ inputs.parameters.out-zarr }}"
           - "--method"
@@ -512,7 +513,7 @@ spec:
           - name: out-zarr
             value: "{{ inputs.parameters.out-zarr }}"
       container:
-        image: downscalecmip6.azurecr.io/dodola:0.3.0
+        image: downscalecmip6.azurecr.io/dodola:0.4.1
         env:
           - name: AZURE_STORAGE_ACCOUNT_NAME
             valueFrom:
@@ -573,7 +574,7 @@ spec:
             s3:
               key: "{{ workflow.name }}/qdm-years/{{ inputs.parameters.year }}.nc"
       container:
-        image: downscalecmip6.azurecr.io/dodola:0.3.0
+        image: downscalecmip6.azurecr.io/dodola:0.4.1
         env:
           - name: AZURE_STORAGE_ACCOUNT_NAME
             valueFrom:
@@ -628,7 +629,7 @@ spec:
           - name: out-zarr
             value: "{{ inputs.parameters.out-zarr }}"
       script:
-        image: downscalecmip6.azurecr.io/dodola:0.1.0
+        image: downscalecmip6.azurecr.io/dodola:0.4.1
         env:
           - name: IN
             value: "{{ inputs.parameters.in-dir }}"
@@ -807,7 +808,7 @@ spec:
           - name: out-zarr
             value: "{{ inputs.parameters.out-zarr }}"
       script:
-        image: downscalecmip6.azurecr.io/dodola:0.3.0
+        image: downscalecmip6.azurecr.io/dodola:0.4.1
         env:
           - name: IN_ZARR
             value: "{{ inputs.parameters.in-zarr }}"
@@ -935,7 +936,7 @@ spec:
           - name: out-zarr
             value: "{{ inputs.parameters.out-zarr }}"
       script:
-        image: downscalecmip6.azurecr.io/dodola:0.3.0
+        image: downscalecmip6.azurecr.io/dodola:0.4.1
         env:
           - name: IN_ZARR
             value: "{{ inputs.parameters.in-zarr }}"
@@ -1098,7 +1099,7 @@ spec:
           - name: out-zarr
             value: "{{ inputs.parameters.out-zarr }}"
       container:
-        image: downscalecmip6.azurecr.io/dodola:0.3.0
+        image: downscalecmip6.azurecr.io/dodola:0.4.1
         env:
           - name: AZURE_STORAGE_ACCOUNT_NAME
             valueFrom:
